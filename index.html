@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>相互相関シミュレーター</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Plotly.js for charting -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <!-- math.js for parsing mathematical expressions -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.2/math.min.js"></script>
+    <style>
+        /* Custom styles for a better look and feel */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .plot-container {
+            min-height: 350px;
+        }
+        .input-label {
+            @apply block text-sm font-medium text-gray-700 mb-1;
+        }
+        .input-field {
+            @apply mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm;
+        }
+        .btn-primary {
+            @apply w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-lg text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-800">相互相関シミュレーター</h1>
+            <p class="mt-2 text-md text-gray-600">2つの波形の類似性と時間的なズレを視覚的に探求します。</p>
+        </header>
+
+        <!-- Input Controls Section -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Function f(t) Input -->
+                <div>
+                    <label for="f-func" class="input-label">関数 f(t)</label>
+                    <input type="text" id="f-func" class="input-field" value="sin(t)">
+                </div>
+                <!-- Function g(t) Input -->
+                <div>
+                    <label for="g-func" class="input-label">関数 g(t)</label>
+                    <input type="text" id="g-func" class="input-field" value="sin(t - pi / 2)">
+                </div>
+                <!-- Time Range and Points Input -->
+                <div class="grid grid-cols-3 gap-2">
+                    <div>
+                        <label for="t-min" class="input-label">t (min)</label>
+                        <input type="number" id="t-min" class="input-field" value="-10">
+                    </div>
+                    <div>
+                        <label for="t-max" class="input-label">t (max)</label>
+                        <input type="number" id="t-max" class="input-field" value="10">
+                    </div>
+                    <div>
+                        <label for="points" class="input-label">点数</label>
+                        <input type="number" id="points" class="input-field" value="500">
+                    </div>
+                </div>
+                 <!-- Simulation Button -->
+                <div class="flex items-end">
+                    <button id="run-button" class="btn-primary">グラフを更新</button>
+                </div>
+            </div>
+            <div class="mt-4 text-xs text-gray-500">
+                <p><span class="font-semibold">数式の書き方例:</span> 変数として `t` を使用します。 演算子 (`+, -, *, /, ^`) や `sin()`, `cos()`, `exp()`, `abs()` などの関数、定数 `pi` や `e` が利用可能です。</p>
+                <p>例: `sin(t) + 0.5 * sin(3*t)`, `exp(-t^2 / 2)`, `t > 2 ? 1 : 0`</p>
+            </div>
+        </div>
+        
+        <!-- Error Message Display -->
+        <div id="error-message" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
+            <strong class="font-bold">エラー:</strong>
+            <span class="block sm:inline" id="error-text"></span>
+        </div>
+
+        <!-- Plots Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div id="plot-f" class="plot-container bg-white rounded-lg shadow-md p-2"></div>
+            <div id="plot-g" class="plot-container bg-white rounded-lg shadow-md p-2"></div>
+            <div id="plot-corr" class="plot-container bg-white rounded-lg shadow-md p-2"></div>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM Elements
+        const fFuncInput = document.getElementById('f-func');
+        const gFuncInput = document.getElementById('g-func');
+        const tMinInput = document.getElementById('t-min');
+        const tMaxInput = document.getElementById('t-max');
+        const pointsInput = document.getElementById('points');
+        const runButton = document.getElementById('run-button');
+        const errorMessageDiv = document.getElementById('error-message');
+        const errorTextSpan = document.getElementById('error-text');
+
+        // Plotly layout configuration
+        const plotLayout = (title) => ({
+            title: { text: title, font: { size: 16 } },
+            margin: { l: 40, r: 20, b: 40, t: 40 },
+            xaxis: { title: 't', gridcolor: '#eee' },
+            yaxis: { gridcolor: '#eee' },
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+        });
+        
+        const corrPlotLayout = (title) => ({
+            ...plotLayout(title),
+            xaxis: { title: 'ラグ (τ)', gridcolor: '#eee' },
+            yaxis: { title: '正規化相関', range: [-1.1, 1.1], gridcolor: '#eee' },
+        });
+
+        /**
+         * Calculates the normalized cross-correlation of two arrays.
+         * The result is in the range [-1, 1].
+         * @param {number[]} f - The first signal array.
+         * @param {number[]} g - The second signal array.
+         * @returns {{lags: number[], correlation: number[]}}
+         */
+        function calculateNormalizedCrossCorrelation(f, g) {
+            const n = f.length;
+
+            const meanF = f.reduce((sum, val) => sum + val, 0) / n;
+            const meanG = g.reduce((sum, val) => sum + val, 0) / n;
+
+            const fDemeaned = f.map(val => val - meanF);
+            const gDemeaned = g.map(val => val - meanG);
+
+            const normF = Math.sqrt(fDemeaned.reduce((sum, val) => sum + val * val, 0));
+            const normG = Math.sqrt(gDemeaned.reduce((sum, val) => sum + val * val, 0));
+            const normalizationFactor = normF * normG;
+
+            if (normalizationFactor === 0) {
+                return {
+                    lags: Array.from({ length: 2 * n - 1 }, (_, i) => i - n + 1),
+                    correlation: Array(2 * n - 1).fill(0)
+                };
+            }
+
+            const correlation = [];
+            const lags = [];
+
+            for (let lag = -n + 1; lag < n; lag++) {
+                let sum = 0;
+                for (let i = 0; i < n; i++) {
+                    const gIndex = i - lag;
+                    if (gIndex >= 0 && gIndex < n) {
+                        sum += fDemeaned[i] * gDemeaned[gIndex];
+                    }
+                }
+                lags.push(lag);
+                correlation.push(sum / normalizationFactor);
+            }
+            return { lags, correlation };
+        }
+        
+        /**
+         * Main function to run the simulation.
+         */
+        function runSimulation() {
+            try {
+                // Hide previous errors
+                errorMessageDiv.classList.add('hidden');
+
+                // 1. Get user inputs
+                const fFunc = fFuncInput.value;
+                const gFunc = gFuncInput.value;
+                const tMin = parseFloat(tMinInput.value);
+                const tMax = parseFloat(tMaxInput.value);
+                const points = parseInt(pointsInput.value);
+
+                if (isNaN(tMin) || isNaN(tMax) || isNaN(points) || points <= 1 || tMin >= tMax) {
+                    throw new Error("時間範囲または点数の入力が無効です。");
+                }
+                
+                // 2. Generate time array and signal data
+                const t = Array.from({ length: points }, (_, i) => tMin + (tMax - tMin) * i / (points - 1));
+                
+                const fNode = math.parse(fFunc);
+                const gNode = math.parse(gFunc);
+                const fCode = fNode.compile();
+                const gCode = gNode.compile();
+
+                const dataF = t.map(val => fCode.evaluate({ t: val }));
+                const dataG = t.map(val => gCode.evaluate({ t: val }));
+
+                // 3. Calculate normalized cross-correlation
+                const step = (tMax - tMin) / (points - 1);
+                const { lags, correlation } = calculateNormalizedCrossCorrelation(dataF, dataG);
+                const tau = lags.map(lag => lag * step);
+
+                // 4. Plot the results using Plotly.js
+                Plotly.newPlot('plot-f', [{ x: t, y: dataF, type: 'scatter', mode: 'lines', name: 'f(t)', line: {color: '#3b82f6'} }], plotLayout('関数 f(t)'), {responsive: true});
+                Plotly.newPlot('plot-g', [{ x: t, y: dataG, type: 'scatter', mode: 'lines', name: 'g(t)', line: {color: '#16a34a'} }], plotLayout('関数 g(t)'), {responsive: true});
+                Plotly.newPlot('plot-corr', [{ x: tau, y: correlation, type: 'scatter', mode: 'lines', name: 'Correlation', line: {color: '#ef4444'} }], corrPlotLayout('相互相関 R(τ)'), {responsive: true});
+                
+            } catch (error) {
+                // Display error message to the user
+                errorTextSpan.textContent = `数式の評価中にエラーが発生しました: ${error.message}`;
+                errorMessageDiv.classList.remove('hidden');
+                // Clear plots on error
+                Plotly.purge('plot-f');
+                Plotly.purge('plot-g');
+                Plotly.purge('plot-corr');
+            }
+        }
+
+        // Event listener for the run button
+        runButton.addEventListener('click', runSimulation);
+
+        // Run simulation on initial page load
+        document.addEventListener('DOMContentLoaded', runSimulation);
+    </script>
+</body>
+</html>
+
